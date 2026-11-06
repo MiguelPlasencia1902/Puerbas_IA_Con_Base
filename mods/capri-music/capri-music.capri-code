@@ -1,0 +1,79 @@
+// capri-mod: 1
+// id: capri-music
+// name: CAPRI Music
+// version: 0.2.0
+// author: Miguel Plasencia
+// description: Controla Spotify mediante un auxiliar local y comandos en español.
+
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using CapriDesktop;
+
+public sealed class CapriMusic : ICapriMod
+{
+    private ICapriHost host;
+    private volatile bool stopped;
+    private readonly object gate = new object();
+    private Process active;
+
+    public void Start(ICapriHost capri) { host = capri; stopped = false; }
+
+    public bool Heard(string words)
+    {
+        if (stopped || String.IsNullOrWhiteSpace(words)) return false;
+        string input = Regex.Replace(words.Trim(), @"^(?:oye\s+)?capri\s*[,.:]?\s*", "", RegexOptions.IgnoreCase).Trim().TrimStart('¿').Trim();
+        string command = null;
+        if (Regex.IsMatch(input, @"^(?:conecta(?:r)?|vincula(?:r)?)\s+spotify\??$", RegexOptions.IgnoreCase)) command = "connect";
+        else if (Regex.IsMatch(input, @"^(?:desconecta(?:r)?|desvincula(?:r)?)\s+spotify\??$", RegexOptions.IgnoreCase)) command = "disconnect";
+        else if (Regex.IsMatch(input, @"^(?:estado|sesión|conexion|conexión)\s+(?:de\s+)?spotify\??$", RegexOptions.IgnoreCase)) command = "status";
+        else if (Regex.IsMatch(input, @"^(?:permisos|scopes|diagnóstico)\s+(?:de\s+)?spotify\??$", RegexOptions.IgnoreCase)) command = "permissions";
+        if (command == null) return false;
+        string job = command;
+        ThreadPool.QueueUserWorkItem(delegate { Run(job, ""); });
+        return true;
+    }
+
+    private void Run(string command, string argument)
+    {
+        lock (gate)
+        {
+            if (stopped) return;
+            string exe = Path.Combine(host.Folder, "helper", "CapriMusicHelper.exe");
+            if (!File.Exists(exe)) { host.Say("CAPRI Music necesita su auxiliar. Mira las instrucciones de instalación."); return; }
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo(exe);
+                info.WorkingDirectory = host.Folder;
+                info.UseShellExecute = false;
+                info.CreateNoWindow = true;
+                info.RedirectStandardInput = true;
+                info.RedirectStandardOutput = true;
+                info.RedirectStandardError = false;
+                using (Process process = Process.Start(info))
+                {
+                    active = process;
+                    process.StandardInput.WriteLine(command);
+                    process.StandardInput.WriteLine(Convert.ToBase64String(Encoding.UTF8.GetBytes(argument)));
+                    process.StandardInput.Close();
+                    int limit = command == "connect" ? 180000 : 30000;
+                    if (!process.WaitForExit(limit)) { process.Kill(); host.Say("Spotify tardó demasiado. Inténtalo otra vez."); return; }
+                    string answer = process.StandardOutput.ReadToEnd().Trim();
+                    if (!stopped) host.Say(answer.Length == 0 ? "Spotify no respondió. Inténtalo otra vez." : answer);
+                }
+            }
+            catch (Exception) { if (!stopped) host.Say("No pude abrir el auxiliar de Spotify."); }
+            finally { active = null; }
+        }
+    }
+
+    public void Stop()
+    {
+        stopped = true;
+        Process process = active;
+        if (process != null) { try { if (!process.HasExited) process.Kill(); } catch (Exception) { } }
+    }
+}
