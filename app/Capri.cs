@@ -1705,6 +1705,7 @@ namespace CapriDesktop
         private readonly System.Windows.Forms.Timer signals;
         private readonly EventWaitHandle restore, shown;
         private readonly string settingsPath;
+        private MusicBridge music;
         private readonly bool testing;
         private readonly Stopwatch clock = Stopwatch.StartNew();
         private Preferences preferences;
@@ -2457,6 +2458,8 @@ namespace CapriDesktop
             tray.BalloonTipClicked += delegate { BalloonClicked(); };
             tray.Visible = !testing;
             ModList = new Mods(data);
+            music = new MusicBridge(ModList.Folder);
+            Hands.SpotifyMusic = music.Run;
             ModList.HostFor = delegate(string modId) { return new ModHost(this, modId); };
             ModList.SkinChanged = Reskinned;
             if (SkinFolder != null || ArtColors.Active) Clip.ReloadAll();
@@ -5125,6 +5128,7 @@ namespace CapriDesktop
 
         private string DoTool(string tool, ToolArguments args, int ticket, bool beside = false)
         {
+            if (tool == "capri_music_reply") return music == null ? "Ya no tengo una selección musical pendiente." : music.Reply(args == null ? null : args.Text);
             if (args != null && args.FromFriend && (!Hands.CallAllowed(tool, args) || args.Current == null || !args.Current())) return "That call request has ended.";
             if (CallModeOn && !CallHands(ticket)) return CallSession.Conversation;
             if (ticket == callUser && (ticket != asking || !callSession.Current(callUserVersion))) return "That call request has ended.";
@@ -5152,6 +5156,23 @@ namespace CapriDesktop
                 if (args.FromFriend) { musicArgs.Asked = args.Asked; musicArgs.FromFriend = true; musicArgs.Current = args.Current; }
                 args = musicArgs;
             }
+            // A model must not choose a provider the user has not chosen for this request.
+            if (ticket == callAskTicket && args != null && (tool == "play_music" || tool == "spotify_music" && (args.Action == "play_track" || args.Action == "play_playlist")))
+            {
+                if (System.Text.RegularExpressions.Regex.IsMatch((callAskText ?? "").Trim(), @"^(?:(?:en|mejor\s+en)\s+)?(?:spotify|youtube|la primera|el primero)[.!?]?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return "No hay una selección musical pendiente. Dime qué quieres escuchar.";
+                string namedMusic = tool == "play_music" ? args.Song : args.Action == "play_playlist" ? args.Name : args.Song;
+                if (!MusicBridge.Mentioned(callAskText, namedMusic) || tool == "spotify_music" && args.Action == "play_track" && !string.IsNullOrWhiteSpace(args.Artist) && !MusicBridge.Mentioned(callAskText, args.Artist)) return "No identifiqué ese título o artista en tu petición. Dime exactamente qué quieres escuchar.";
+                bool spotifyNamed = System.Text.RegularExpressions.Regex.IsMatch(callAskText ?? "", @"\bspotify\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                bool youtubeNamed = System.Text.RegularExpressions.Regex.IsMatch(callAskText ?? "", @"\byoutube\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (tool == "play_music") args.App = spotifyNamed && !youtubeNamed ? "spotify" : youtubeNamed && !spotifyNamed ? "youtube" : null;
+                if (tool == "spotify_music" && !spotifyNamed)
+                {
+                    string song = args.Action == "play_playlist" ? args.Name : args.Song;
+                    if (!string.IsNullOrWhiteSpace(args.Artist)) song += " de " + args.Artist;
+                    args = new ToolArguments { Song = song, Kind = args.Action == "play_playlist" ? "playlist" : "song", App = youtubeNamed ? "youtube" : null };
+                    tool = "play_music";
+                }
+            }
             // SECURITY: a toggle they switched off holds the call and she asks first; their yes runs it (ResumeJob).
             string asked = Security.Gate(tool, args);
             if (asked != null) return asked;
@@ -5162,7 +5183,7 @@ namespace CapriDesktop
                 args.Task += CallSession.JoinTask;
             }
             // With Use your mouse and keyboard for jobs off, her quick tools stay quick instead of taking the mouse.
-            string task = beside || preferences.QuickHands || args == null || args.Current != null || brain.Model == null || !Security.On(Security.Mouse) ? null : CursorJob(tool, args);
+            string task = tool == "spotify_music" || tool == "play_music" || tool == "media" && music != null && music.RoutesMedia(args) || beside || preferences.QuickHands || args == null || args.Current != null || brain.Model == null || !Security.On(Security.Mouse) ? null : CursorJob(tool, args);
             bool mouse = task != null || tool == "use_computer";
             string done;
             bool lost = false, held = false;
@@ -5173,7 +5194,7 @@ namespace CapriDesktop
                 if (ticket == escAsk) done = "";
                 else if (CallModeOn && !CallHands(ticket) || callVersion >= 0 && (ticket != asking || !callSession.Current(callVersion)) || args != null && args.FromFriend && !args.Current()) done = "That call request has ended.";
                 else if (tool == "find_file") done = Hands.Finder.Do(args ?? new ToolArguments(), delegate { return ticket != asking || ticket == escAsk || quitting; });
-                else if (task == null) done = Hands.Do(tool, args);
+                else if (task == null) done = tool == "media" && music != null && music.RoutesMedia(args) ? music.Media(args) : Hands.Do(tool, args);
                 else
                 {
                     try { done = Hands.Work(task, null); }
@@ -12743,7 +12764,8 @@ namespace CapriDesktop
             if (callVersion >= 0 && callHeard != null) callContext += "\nHeard this turn, in order. Only the user's words authorize this request.\n" + CallSession.Labels(callHeard);
             string callRecord = callHeard ?? text;
             if (callVersion >= 0) { callUser = asking; callUserVersion = callVersion; }
-            if (prompt == "> you: " && ModList.Heard(text)) return;
+            bool musicReply = prompt == "> you: " && music != null && music.MatchesReply(text);
+            if (prompt == "> you: " && !musicReply && ModList.Heard(text)) return;
             WakeRest(!SleepBusy);
             followUp.Drop();
             if (StopWatchAlong(text)) return;
@@ -12763,7 +12785,7 @@ namespace CapriDesktop
             // Asked for partway through a job or further into a long message than her brain reads, it still counts.
             if (Hands.StreamAsked(text)) Computer.Streaming = true;
             bool fileMessage = brain.Attachments.Waiting || Files.PathIn(text) != null;
-            System.Collections.Generic.KeyValuePair<string, ToolArguments> planned = Hands.Plan(text);
+            System.Collections.Generic.KeyValuePair<string, ToolArguments> planned = musicReply ? new System.Collections.Generic.KeyValuePair<string, ToolArguments>("capri_music_reply", new ToolArguments { Text = text }) : Hands.Plan(text);
             if (callReply == null && prompt == "> you: " && HearMini(text)) return;
             // Mid-job, what they say goes to the job instead of cancelling it: she says she's got it, does it, then carries on
             // (Lachy, 29 Oct: "she needs to actually listen to me mid way through").
@@ -17374,6 +17396,7 @@ namespace CapriDesktop
 
         internal static void SmokeRequests(System.Collections.Generic.List<string> checks, string folder)
         {
+            Func<string, ToolArguments, string> savedMusicBridge = Hands.SpotifyMusic;
             Func<System.Collections.Generic.List<InstalledApp>> requestCatalog = Hands.Catalog;
             Func<System.Collections.Generic.List<OpenWindow>> requestWindows = Hands.Windows;
             Func<string, bool> requestExists = Hands.Exists, requestPlaying = Hands.SongPlaying, requestPress = Hands.PressPlay;
@@ -17387,6 +17410,8 @@ namespace CapriDesktop
             Func<Tune> requestTune = Tunes.Spotify;
             try
             {
+                // These pre-v0.2 checks exercise the original player in isolation; SmokeMusicBridge covers the new route.
+                Hands.SpotifyMusic = null;
                 Hands.Catalog = delegate { return new System.Collections.Generic.List<InstalledApp> { new InstalledApp("Spotify", "spotify"), new InstalledApp("Minecraft", "minecraft") }; };
                 Hands.Exists = delegate { return false; };
                 Hands.Windows = delegate { return new System.Collections.Generic.List<OpenWindow>(); };
@@ -17740,6 +17765,7 @@ namespace CapriDesktop
             }
             finally
             {
+                Hands.SpotifyMusic = savedMusicBridge;
                 Hands.Catalog = requestCatalog; Hands.Windows = requestWindows; Hands.Exists = requestExists; Hands.SongPlaying = requestPlaying; Hands.PressPlay = requestPress;
                 Hands.Fetch = requestFetch; Hands.BrowserPath = requestBrowser; Hands.Opened = requestOpened; Hands.GameOpen = requestGame; Hands.Plan = requestPlan;
                 Hands.Run = requestRun; Hands.Browse = requestBrowse; Hands.Websites = requestWebsites; Hands.Finder = requestFinder; Tunes.Spotify = requestTune;
@@ -29709,6 +29735,7 @@ namespace CapriDesktop
             Section(checks, "SmokeMoreSettings", delegate { SmokeMoreSettings(checks); });
             Section(checks, "SmokeOwnSettings", delegate { SmokeOwnSettings(checks); });
             Section(checks, "SmokeWindowTool", delegate { SmokeWindowTool(checks); });
+            Section(checks, "SmokeMusicBridge", delegate { SmokeMusicBridge(checks); });
             Section(checks, "SmokeWindowReal", delegate { SmokeWindowReal(checks); });
             Section(checks, "SmokeSettingsTool", delegate { SmokeSettingsTool(checks); });
             Section(checks, "SmokeOwnSliders", delegate { SmokeOwnSliders(checks); });

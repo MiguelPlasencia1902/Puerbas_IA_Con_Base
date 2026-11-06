@@ -9,6 +9,56 @@ namespace CapriDesktop
 {
     internal partial class Companion
     {
+        private static void SmokeMusicBridge(List<string> checks)
+        {
+            List<string> sent = new List<string>();
+            int youtube = 0;
+            bool selected = false;
+            MusicBridge bridge = new MusicBridge("unused", delegate(string command, string value)
+            {
+                sent.Add(command + ":" + value);
+                if (command == "track" && !selected) return "Selecciona primero el dispositivo Spotify donde quieres escuchar música.";
+                if (command == "devices") return "Dispositivos: 1. DESKTOP (Computer).";
+                if (command == "device") { selected = true; return "Usaré «DESKTOP» para Spotify. No he iniciado reproducción."; }
+                if (command == "track" || command == "track-v2") return "Pedí reproducir Riptide. Aún no pude confirmarlo.";
+                return "Spotify respondió.";
+            }, delegate(string song, string app, string kind) { youtube++; return "YouTube abrió la búsqueda; no confirmé reproducción."; });
+            if (Hands.Tools.IndexOf("\"spotify_music\"", StringComparison.Ordinal) < 0) throw new Exception("Spotify tool not registered for the brain.");
+            if (!MusicBridge.Mentioned("Pon Música de Vance Joy", "musica") || MusicBridge.Mentioned("Pon Riptide", "Never Fade Away")) throw new Exception("A generated title was treated as user supplied.");
+            if (!Hands.Valid("spotify_music", new ToolArguments { Action = "play_track", Song = "Riptide" }) || Hands.Valid("spotify_music", new ToolArguments { Action = "shell", Name = "cmd" })) throw new Exception("Spotify tool accepted an unsafe action.");
+            if (bridge.Run("play_music", new ToolArguments { Song = "Riptide" }) != "¿Quieres que la reproduzca en Spotify o en YouTube?" || sent.Count != 0 || !bridge.MatchesReply("En Spotify")) throw new Exception("Provider question started playback or lost context.");
+            string needsDevice = bridge.Reply("En Spotify");
+            if (!needsDevice.Contains("Elige el dispositivo") || !bridge.MatchesReply("la primera") || sent.Count != 2 || sent[0] != "track:Riptide") throw new Exception("Device choice or requested song was lost.");
+            string played = bridge.Reply("la primera");
+            if (!played.Contains("Aún no pude confirmarlo") || sent.Count != 4 || sent[2] != "device:1" || sent[3] != "track-v2:Riptide\n") throw new Exception("Device choice did not resume the requested song or falsely confirmed it: " + played + " / " + string.Join(" | ", sent.ToArray()));
+            if (bridge.MatchesReply("Spotify") || bridge.MatchesReply("Hola")) throw new Exception("A bare provider became a new command.");
+            if (bridge.Run("play_music", new ToolArguments { Song = "Riptide", App = "spotify" }).StartsWith("¿Quieres", StringComparison.Ordinal)) throw new Exception("Explicit Spotify asked again.");
+            if (bridge.Run("play_music", new ToolArguments { Song = "Riptide" }) != "¿Quieres que la reproduzca en Spotify o en YouTube?" || !bridge.MatchesReply("Mejor en YouTube") || bridge.Reply("Mejor en YouTube").IndexOf("no confirmé", StringComparison.Ordinal) < 0 || youtube != 1) throw new Exception("YouTube choice used Spotify or promised playback.");
+            bridge.Run("play_music", new ToolArguments { Song = "Riptide" });
+            if (bridge.MatchesReply("Hablemos de otra cosa") || bridge.MatchesReply("Spotify")) throw new Exception("An unrelated conversation kept the music request pending.");
+            if (bridge.Run("spotify_music", new ToolArguments { Action = "search", Song = "Riptide", Artist = "Vance Joy" }) != "Spotify respondió." || sent[sent.Count - 1] != "search-v2:Riptide\nVance Joy") throw new Exception("Search lost its artist or started playback.");
+            bridge.Run("play_music", new ToolArguments { Song = "mi playlist de favoritos", Kind = "playlist", App = "spotify" });
+            if (sent[sent.Count - 1] != "playlist:favoritos") throw new Exception("The playlist name kept conversational words.");
+            bridge.Run("spotify_music", new ToolArguments { Action = "play_track", Song = "Canción de Hielo", Artist = "Artista" });
+            if (sent[sent.Count - 1] != "track-v2:Canción de Hielo\nArtista") throw new Exception("A title with de lost its explicit artist.");
+            if (!bridge.RoutesMedia(new ToolArguments { Action = "pause" }) || bridge.RoutesMedia(new ToolArguments { Action = "pause", App = "youtube" })) throw new Exception("Media provider routing changed YouTube.");
+            string previousNvidia = Brain.Nvidia;
+            List<string> modelRequests = new List<string>();
+            System.Net.Sockets.TcpListener modelServer;
+            Brain.Nvidia = FakeServer(new[] { "{\"choices\":[{\"message\":{\"content\":null,\"tool_calls\":[{\"function\":{\"name\":\"spotify_music\",\"arguments\":\"{\\\"action\\\":\\\"devices\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}", "{\"choices\":[{\"message\":{\"content\":\"Spotify respondió.\"},\"finish_reason\":\"stop\"}]}" }, modelRequests, out modelServer);
+            try
+            {
+                Brain model = new Brain();
+                model.Remote = new Cloud("nvapi-test", "nvidia/nemotron-3.5-super-vl-120b-a12b");
+                model.Model = model.Remote.Model;
+                model.Act = bridge.Run;
+                string answer = model.Ask("Muéstrame los dispositivos de Spotify");
+                if (!answer.Contains("Spotify respondió.") || sent[sent.Count - 1] != "devices:" || modelRequests.Count < 1 || modelRequests[0].IndexOf("\"spotify_music\"", StringComparison.Ordinal) < 0) throw new Exception("The simulated NVIDIA tool call did not reach CAPRI Music: " + answer + " / " + string.Join(" | ", sent.ToArray()));
+            }
+            finally { modelServer.Stop(); Brain.Nvidia = previousNvidia; }
+            checks.Add("PASS CAPRI Music bridge: native tool schema, provider and device choices, Spotify routing, YouTube choice, unconfirmed playback and ordinary conversation");
+        }
+
         // A pretend window on her pretend desk: where it is, its normal place for when it's restored, and what it won't do.
         private sealed class PretendWindow
         {

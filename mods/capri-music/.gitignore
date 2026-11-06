@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+**/dist/
+**/helper/
+**/client-id.txt
+**/spotify-tokens.dpapi
+**/device-preference.txt
+**/device-list.json
+**/*.new
+tests/*.exe
+tests/*.pdb

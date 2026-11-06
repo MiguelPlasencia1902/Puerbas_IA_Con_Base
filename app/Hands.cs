@@ -27,6 +27,7 @@ namespace CapriDesktop
         [DataMember(Name = "action")] public string Action;
         [DataMember(Name = "focus")] public string Focus;
         [DataMember(Name = "song")] public string Song;
+        [DataMember(Name = "artist")] public string Artist;
         [DataMember(Name = "app")] public string App;
         [DataMember(Name = "kind")] public string Kind;
         [DataMember(Name = "task")] public string Task;
@@ -266,7 +267,7 @@ namespace CapriDesktop
             {
                 case "open_app": case "open_website": return Open;
                 case "media": return action == "now_playing" || action == "volume_now" ? -1 : action == "open_player" ? Windows : Media;
-                case "play_music": return Media;
+                case "play_music": case "spotify_music": return tool == "spotify_music" && (action == "devices" || action == "current" || action == "playlists" || action == "find_playlist" || action == "search") ? -1 : Media;
                 case "shortcut": return Shortcuts;
                 case "app_window": return Windows;
                 case "app_volume": return action == "now" ? -1 : Media;
@@ -618,7 +619,7 @@ namespace CapriDesktop
         private const string Handing =
             "You are the hands of Capri, a desktop companion on the user's Windows PC. You don't chat.\n" +
             "Act only on their latest request. Earlier messages are context for names, not commands to repeat. Call one tool for each thing they ask for, however many there are (open Discord, Spotify and Steam is three open_app calls): open an app, game or website, search a site, play music, control media or volume, check the current song, switch to, minimize, maximize, restore, snap, move, resize or close an app's window, or look at their screen when asked about it. Use the names they gave.\n" +
-            "For music, including open Spotify and play a song or playlist, always call play_music once. It opens the music directly; don't turn it into a clicking job or call media play_pause afterwards.\n" +
+            "For music, call play_music once with the provider only if the user specified it. An omitted provider asks Spotify or YouTube before playback. Use spotify_music for Spotify devices, playback control, search and playlists. Never use mouse jobs to play Spotify.\n" +
             "Suggestions to do something, like let's watch YouTube or we should open Spotify, are requests to do it. Answering questions on their screen is a normal use_computer job.\n" +
             "If the job needs clicking, typing or more than one step, like opening an app and then searching, going somewhere or making something in it, call use_computer once with the whole job in their words.\n" +
             "You play games on their PC yourself with their mouse and keyboard, so when they want you to play a game, or say let's play, in any language, that's a job: call open_app if it isn't open yet, or use_computer once it's open or there's more to do.\n" +
@@ -1004,8 +1005,10 @@ namespace CapriDesktop
 #endif
             { "look_at_screen", "Take a screenshot of their screen and look at it right now: what they're doing, playing or showing you. Use it whenever they ask you to check, look at or see their screen, or ask what something on it is. You can always look, so never say you can't see their screen." + LookingAt,
               "{\"type\":\"object\",\"properties\":{\"focus\":{\"type\":\"string\",\"description\":\"What to look at, if they said\"}" + LookPlace + "}}", "look at your screen", "look at their screen" },
-            { "play_music", "Play a song, playlist, album or artist they name, on Spotify or YouTube, including open Spotify and play requests. Only for things to listen to: a game, match or board is never this, even when they say play. Use this instead of a clicking job. For their liked songs, use kind playlist and song Liked Songs. For their own named playlist, keep my before its name so it searches Spotify itself instead of choosing a public playlist URI with that name. If they leave the pick to you, pick a track from the Cyberpunk 2077 or Edgerunners soundtrack.",
+            { "play_music", "Play music requested by the user. Set app only when the user explicitly chose Spotify or YouTube. If omitted, Capri asks the user to choose before doing anything. Preserve the exact title, artist and playlist name; do not invent one. Spotify uses its Web API and requires an explicitly selected device. YouTube retains Capri's existing behavior. Do not use mouse jobs for Spotify.",
               "{\"type\":\"object\",\"properties\":{\"song\":{\"type\":\"string\",\"description\":\"What to play, like a song and its artist or a playlist's name\"},\"kind\":{\"type\":\"string\",\"description\":\"What it is\",\"enum\":[\"song\",\"playlist\",\"album\",\"artist\"]},\"app\":{\"type\":\"string\",\"description\":\"Where to play it, if they said\",\"enum\":[\"spotify\",\"youtube\"]}},\"required\":[\"song\"]}", "play songs, playlists, albums and artists on Spotify or YouTube", "play songs on Spotify or YouTube" },
+            { "spotify_music", "Use Spotify Web API for devices, song search, playlists and playback control. The user must choose Spotify for music playback. Select a device only after the user explicitly chooses it; never choose an arbitrary device. Use action play_track with song and optional artist, play_playlist with name, search with song and optional artist, select_device with name or the number from the latest list, devices, playlists, find_playlist with name, pause, resume, next, previous or current. Do not supply URLs, shell commands or access tokens.",
+              "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"description\":\"The Spotify operation\",\"enum\":[\"search\",\"play_track\",\"play_playlist\",\"devices\",\"select_device\",\"pause\",\"resume\",\"next\",\"previous\",\"current\",\"playlists\",\"find_playlist\"]},\"song\":{\"type\":\"string\",\"description\":\"Exact track title\"},\"artist\":{\"type\":\"string\",\"description\":\"Artist if the user supplied one\"},\"name\":{\"type\":\"string\",\"description\":\"Playlist or device name or device number\"}},\"required\":[\"action\"]}", "control Spotify through its Web API", "search, play and control Spotify" },
             { "app_window", "Switch to, minimize or close an app or game that's open on their PC, found by its name or a word in its window's title. Naming a site closes that browser tab." + Arranging,
               "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"The app's name or a word from its window's title, or the site in a browser tab\"},\"action\":{\"type\":\"string\",\"description\":\"What to do\",\"enum\":[\"switch_to\",\"minimize\",\"maximize\",\"restore\",\"close\",\"snap_left\",\"snap_right\",\"snap_top\",\"snap_bottom\",\"move_to_screen\",\"move\",\"resize\",\"pin_on_top\",\"unpin\"]}" + Placing + "},\"required\":[\"name\",\"action\"]}",
               "switch to, minimize, maximize, snap, move, resize or close your apps' windows and browser tabs, on any of your monitors", "switch to, minimize, maximize, snap, move, resize or close their windows" },
@@ -1105,7 +1108,7 @@ namespace CapriDesktop
 
         // A check her brain made only to find out where things stand, which changes nothing: it isn't a job for her transcript,
         // where window titles would end up in her memories, and it isn't something she did.
-        internal static bool Checking(string tool, ToolArguments args) { return (tool == "voice_chat" || tool == "job_control" || tool == "updates") && args != null && args.Action == "status" || tool == "list_windows" || tool == "check_app" || tool == "capri_settings" && (args == null || args.Action != "on" && args.Action != "off" && args.Action != "set") || tool == "app_volume" && (args == null || args.Action == "now") || tool == "pc_status" || tool == "internet_status"; }
+        internal static bool Checking(string tool, ToolArguments args) { return tool == "spotify_music" && args != null && Regex.IsMatch(args.Action ?? "", @"\A(devices|current|playlists|find_playlist|search)\z") || (tool == "voice_chat" || tool == "job_control" || tool == "updates") && args != null && args.Action == "status" || tool == "list_windows" || tool == "check_app" || tool == "capri_settings" && (args == null || args.Action != "on" && args.Action != "off" && args.Action != "set") || tool == "app_volume" && (args == null || args.Action == "now") || tool == "pc_status" || tool == "internet_status"; }
 
         // Her tools as her brains get them, made from the ones that work here. On a Windows PC with a brain that can see, that's
         // all of them, the same as they always were.
@@ -1284,6 +1287,7 @@ namespace CapriDesktop
         internal static Func<string, string> Instead = delegate { return null; };
         internal static Func<string, bool> PressPlay = ClickPlay;
         internal static Func<string> NowPlaying = SpotifyTitle;
+        internal static Func<string, ToolArguments, string> SpotifyMusic;
         internal static Func<string, bool> SongPlaying = PlayingSong;
         internal static Func<string, string, string> Work = delegate { return "Using the mouse and keyboard isn't ready on this PC yet."; };
         internal static Func<string, string> Resume = delegate { return null; };
@@ -1478,7 +1482,8 @@ namespace CapriDesktop
                 if (tool == "open_website") return OpenSite(args.Site, args.Search, args.Browser);
                 if (tool == "media") return Media(args);
                 if (tool == "look_at_screen") return string.IsNullOrWhiteSpace(args.Screen) ? Look(args.Focus) : LookOn(args.Focus, args.Screen);
-                if (tool == "play_music") return PlayMusic(args.Song, args.App, args.Kind, args.Current, args.SongOnly);
+                if (tool == "spotify_music") return SpotifyMusic == null ? "La integración de Spotify no está disponible." : SpotifyMusic(tool, args);
+                if (tool == "play_music") return SpotifyMusic == null ? PlayMusic(args.Song, args.App, args.Kind, args.Current, args.SongOnly) : SpotifyMusic(tool, args);
                 if (tool == "app_window") return Window(args);
                 if (tool == "use_computer")
                 {
@@ -1596,7 +1601,7 @@ namespace CapriDesktop
 
         internal static string Schema(int i) { return Specs[i, 2]; }
 
-        internal static string ElevenLabsTool(int i) { return "{\"tool_config\":{\"type\":\"client\",\"name\":\"" + Specs[i, 0] + "\",\"description\":" + Voice.Quote(Specs[i, 1]) + ",\"parameters\":" + Specs[i, 2] + ",\"expects_response\":true,\"response_timeout_secs\":" + (Specs[i, 0] == "use_computer" || Specs[i, 0] == "stream" || Specs[i, 0] == "listen" || Specs[i, 0] == "play_music" ? 60 : 20) + "}}"; }
+        internal static string ElevenLabsTool(int i) { return "{\"tool_config\":{\"type\":\"client\",\"name\":\"" + Specs[i, 0] + "\",\"description\":" + Voice.Quote(Specs[i, 1]) + ",\"parameters\":" + Specs[i, 2] + ",\"expects_response\":true,\"response_timeout_secs\":" + (Specs[i, 0] == "use_computer" || Specs[i, 0] == "stream" || Specs[i, 0] == "listen" || Specs[i, 0] == "play_music" || Specs[i, 0] == "spotify_music" ? 60 : 20) + "}}"; }
 
         private static string Render(List<string[]> specs, bool claude)
         {
@@ -2198,7 +2203,7 @@ namespace CapriDesktop
             bool mouse = kit == null || kit.Has("use_computer");
             string directTool;
             ToolArguments directArgs;
-            if (Direct(said, out directTool, out directArgs) && (directTool == "play_music" || directTool == "mini_game" || directTool == "website_nickname" || directTool == "find_file" || directTool == "open_website"))
+            if (Direct(said, out directTool, out directArgs) && (directTool == "play_music" && SpotifyMusic == null || directTool == "mini_game" || directTool == "website_nickname" || directTool == "find_file" || directTool == "open_website"))
             {
                 calls.Clear();
                 calls.Add(new KeyValuePair<string, ToolArguments>(directTool, directArgs));
@@ -2225,7 +2230,7 @@ namespace CapriDesktop
             }
             if (calls.Exists(drawn => drawn.Key == "draw")) return false;
 #endif
-            if (calls.Exists(call => call.Key == "use_computer" || call.Key == "look_at_screen" || call.Key == "listen" || call.Key == "media" || call.Key == "play_music")) return false;
+            if (calls.Exists(call => call.Key == "use_computer" || call.Key == "look_at_screen" || call.Key == "listen" || call.Key == "media" || call.Key == "play_music" || call.Key == "spotify_music")) return false;
             if (!calls.Exists(call => Array.IndexOf(Herself, call.Key) >= 0) && Wants(said) && ((Errand(said) && !calls.Exists(call => call.Key == "shortcut" || call.Key == "remember")) || Regex.IsMatch(text, @"\s(and|then|&)\s+(then\s+)?(\w+\s+)?(search|look|type|click|go|make|create|write|find|open|sign|log|send|start|join|watch|check|put|add|draw|set|turn|say|tell|message|text|dm|reply|post|ask|paste|share|ping|install|uninstall|reinstall|download|upload|update|upgrade)\b", RegexOptions.IgnoreCase)))
             {
                 calls.Clear();
@@ -3279,7 +3284,7 @@ namespace CapriDesktop
                 // "play the wasd minigame" is a game, not a song to search Spotify for (a tester, 30 Oct), and so is a game that's open.
                 if (!found.Groups[3].Success && (Playable.IsMatch(target) || PlainGame.IsMatch(target) || Nickname(target) != null || Showing(target))) return false;
                 if (found.Groups[3].Success) args.App = found.Groups[3].Value.ToLowerInvariant();
-                if (Regex.IsMatch(target, @"^(music$|some music$|((a|any|some|random) )?(song|track|tune|music)s?$|(something|anything)\b(?!\s+by\s))", RegexOptions.IgnoreCase)) { tool = "play_music"; args.Kind = "song"; args.Song = Pick(); return true; }
+                if (Regex.IsMatch(target, @"^(music$|some music$|((a|any|some|random) )?(song|track|tune|music)s?$|(something|anything)\b(?!\s+by\s))", RegexOptions.IgnoreCase)) { tool = "play_music"; args.Kind = "song"; args.Song = SpotifyMusic == null ? Pick() : target; return true; }
                 Match kind = Regex.Match(target, @"^(?:(?:the|my|your)\s+)?(.+?)\s+(playlist|album)$", RegexOptions.IgnoreCase);
                 Match first = Regex.Match(target, @"^(?:the\s+)?(playlist|album)\s+(.+)$", RegexOptions.IgnoreCase);
                 Match by = Regex.Match(target, @"^(?:some(?:thing)?|anything|(?:(?:some|a|any)\s+)?(?:songs?|music|tracks?))\s+by\s+(.+)$", RegexOptions.IgnoreCase);
@@ -3556,6 +3561,7 @@ namespace CapriDesktop
 
         internal static bool Valid(string tool, ToolArguments args)
         {
+            if (tool == "spotify_music") return args != null && Regex.IsMatch(args.Action ?? "", @"\A(search|play_track|play_playlist|devices|select_device|pause|resume|next|previous|current|playlists|find_playlist)\z") && (args.Action != "search" && args.Action != "play_track" || Named(args.Song)) && (args.Action != "select_device" && args.Action != "play_playlist" && args.Action != "find_playlist" || Named(args.Name)) && (args.Song == null || args.Song.Length <= 200) && (args.Artist == null || args.Artist.Length <= 160) && (args.Name == null || args.Name.Length <= 160);
             if (tool == "mainframe") return args != null && (string.IsNullOrEmpty(args.Name) || Regex.IsMatch(args.Name, @"\A(main|settings|brain|voice|you|moves|keys|capri|watch|habits|games|clips|security|extras|layers|mixer|personality|memories)\z"));
 #if !CROSS
             if (tool == "call_errand") return args != null && Regex.IsMatch(args.Action ?? "", @"\A(open_app|play_song|cancel)\z");
@@ -4863,6 +4869,8 @@ namespace CapriDesktop
         internal const string MoonSong = "I Really Want to Stay at Your House";
 
         internal const string Home = "capriai.app";
+
+        internal static string PlayMusicLegacy(string song, string app, string kind) { return PlayMusic(song, app, kind); }
 
         private static string PlayMusic(string song, string app, string kind, Func<bool> current = null, bool songOnly = false)
         {
